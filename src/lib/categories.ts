@@ -1,6 +1,7 @@
 export function getAgeCategory(birthDate: string): { age: number; category: string } | null {
   if (!birthDate) return null;
-  const birth = new Date(birthDate);
+  const [y, mo, d] = birthDate.split("-").map(Number);
+  const birth = new Date(y, mo - 1, d);
   const today = new Date();
   let age = today.getFullYear() - birth.getFullYear();
   const m = today.getMonth() - birth.getMonth();

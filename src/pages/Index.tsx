@@ -1,111 +1,194 @@
 import { useState, useCallback } from "react";
 import WelcomeScreen from "@/components/screens/WelcomeScreen";
-import ParentProfileScreen from "@/components/screens/ParentProfileScreen";
 import ChildInfoScreen from "@/components/screens/ChildInfoScreen";
-import HealthScreen from "@/components/screens/HealthScreen";
 import ParentInfoScreen from "@/components/screens/ParentInfoScreen";
-import SlotScreen from "@/components/screens/SlotScreen";
 import PaymentScreen from "@/components/screens/PaymentScreen";
+import SignatureScreen from "@/components/screens/SignatureScreen";
 import ConfirmationScreen from "@/components/screens/ConfirmationScreen";
 import RaidersHeader from "@/components/RaidersHeader";
 import StepIndicator from "@/components/StepIndicator";
-import { getAgeCategory } from "@/lib/categories";
+import { supabase } from "@/lib/supabase";
 import { ArrowLeft } from "lucide-react";
 
-const STEP_TITLES = ["INFORMATIONS ENFANT", "SANTÉ & MÉDICAL", "INFORMATIONS PARENT", "CHOIX DU CRÉNEAU", "PAIEMENT & SIGNATURE"];
+const STEP_TITLES = [
+  "INFORMATIONS ENFANT",
+  "INFORMATIONS PARENT",
+  "PAIEMENT",
+  "ENGAGEMENT & SIGNATURE",
+];
 
 const Index = () => {
   const [screen, setScreen] = useState(0);
-  const [parentRole, setParentRole] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const [child, setChild] = useState({
-    nom: "", prenom: "", dateNaissance: "", genre: "", photo: null as File | null,
-    ecole: "", tailleMaillot: "", niveau: "",
+    nom: "", prenom: "", dateNaissance: "", genre: "", adresse: "", telephone: "",
+    hasAllergy: false, allergyDetails: "",
   });
-
-  const [health, setHealth] = useState({
-    hasHealthIssues: false, healthDetails: "", hasTreatment: false,
-    treatmentDetails: "", certificat: null as File | null, telMedecin: "",
-  });
+  const [childPhoto, setChildPhoto] = useState<File | null>(null);
 
   const [parent, setParent] = useState({
-    lien: "", nom: "", prenom: "", telephone: "", email: "",
-    adresse: "", nomUrgence: "", telUrgence: "",
+    email: "", nom: "", telephone: "",
   });
 
-  const [selectedSlot, setSelectedSlot] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("");
+  const [paymentOther, setPaymentOther] = useState("");
+
+  const [signature, setSignature] = useState({
+    nom: "", date: "", agreed: false,
+  });
+
   const [dossierNumber, setDossierNumber] = useState("");
 
-  const catInfo = getAgeCategory(child.dateNaissance);
+  const isStepperScreen = screen >= 1 && screen <= 4;
+  const stepIndex = screen - 1;
+
+  const canContinue = () => {
+    switch (stepIndex) {
+      case 0:
+        return !!(
+          child.nom && child.prenom && child.dateNaissance &&
+          child.genre && child.adresse && child.telephone &&
+          (!child.hasAllergy || child.allergyDetails.trim())
+        );
+      case 1:
+        return !!(parent.email && parent.nom && parent.telephone);
+      case 2:
+        return !!(paymentMethod && (paymentMethod !== "autre" || paymentOther.trim()));
+      default:
+        return true;
+    }
+  };
 
   const goNext = useCallback(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
-    if (screen === 1) {
-      setParent((p) => ({ ...p, lien: parentRole }));
-    }
-    if (screen === 7) return;
     setScreen((s) => s + 1);
-  }, [screen, parentRole]);
+  }, []);
 
   const goBack = useCallback(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
     setScreen((s) => Math.max(0, s - 1));
   }, []);
 
-  const handleSubmit = () => {
-    const num = `RAS-2025-${String(Math.floor(Math.random() * 10000)).padStart(4, "0")}`;
-    setDossierNumber(num);
-    setScreen(7);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    setSubmitError(null);
 
-  // Stepper screens (2-6 → steps 1-5)
-  const stepIndex = screen - 2; // 0-4
-  const isStepperScreen = screen >= 2 && screen <= 6;
-
-  const canContinueStep = () => {
-    switch (stepIndex) {
-      case 0: return child.nom && child.prenom && child.dateNaissance && child.genre && child.tailleMaillot && child.niveau;
-      case 1: return !!health.certificat || true; // relaxed for demo
-      case 2: return parent.nom && parent.prenom && parent.telephone;
-      case 3: return !!selectedSlot;
-      default: return true;
+    // Upload photo d'abord avec un nom temporaire (uuid)
+    let photoUrl: string | null = null;
+    if (childPhoto) {
+      const ext = childPhoto.name.split(".").pop();
+      const tmpPath = `tmp_${Date.now()}.${ext}`;
+      const { error: uploadError } = await supabase.storage
+        .from("dossier-photos")
+        .upload(tmpPath, childPhoto, { upsert: true });
+      if (!uploadError) {
+        const { data } = supabase.storage.from("dossier-photos").getPublicUrl(tmpPath);
+        photoUrl = data.publicUrl;
+      }
     }
+
+    // Le numéro est généré automatiquement par le trigger Supabase (LRAS01, LRAS02…)
+    const { data: inserted, error } = await supabase
+      .from("dossiers")
+      .insert({
+        status: "en_attente",
+        child_nom: child.nom,
+        child_prenom: child.prenom,
+        child_date_naissance: child.dateNaissance,
+        child_genre: child.genre,
+        child_adresse: child.adresse,
+        child_telephone: child.telephone,
+        child_photo: photoUrl,
+        has_allergy: child.hasAllergy,
+        allergy_details: child.allergyDetails || null,
+        parent_email: parent.email,
+        parent_nom: parent.nom,
+        parent_telephone: parent.telephone,
+        payment_method: paymentMethod,
+        payment_other: paymentOther || null,
+        signature_nom: signature.nom,
+        signature_date: signature.date || new Date().toISOString().split("T")[0],
+      })
+      .select("dossier_number")
+      .single();
+
+    if (error) {
+      setSubmitError("Une erreur est survenue. Veuillez réessayer.");
+      setSubmitting(false);
+      return;
+    }
+
+    setDossierNumber(inserted?.dossier_number ?? "");
+    setScreen(5);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    setSubmitting(false);
   };
 
   return (
     <div className="min-h-screen bg-secondary flex justify-center">
       <div className="w-full max-w-[480px] bg-background min-h-screen shadow-lg">
-        {screen === 0 && <WelcomeScreen onNext={goNext} />}
 
-        {screen === 1 && (
-          <ParentProfileScreen value={parentRole} onChange={setParentRole} onNext={goNext} />
-        )}
+        {screen === 0 && <WelcomeScreen onNext={goNext} />}
 
         {isStepperScreen && (
           <>
             <RaidersHeader />
-            <StepIndicator currentStep={stepIndex + 1} totalSteps={5} title={STEP_TITLES[stepIndex]} />
+            <StepIndicator
+              currentStep={stepIndex + 1}
+              totalSteps={4}
+              title={STEP_TITLES[stepIndex]}
+            />
 
             {stepIndex > 0 && (
-              <button onClick={goBack} className="flex items-center gap-1 px-5 pt-4 text-hint text-muted-foreground hover:text-foreground transition-colors">
+              <button
+                onClick={goBack}
+                className="flex items-center gap-1 px-5 pt-4 text-hint text-muted-foreground hover:text-foreground transition-colors"
+              >
                 <ArrowLeft className="w-4 h-4" /> Retour
               </button>
             )}
 
-            {stepIndex === 0 && <ChildInfoScreen data={child} onChange={(d) => setChild((c) => ({ ...c, ...d }))} />}
-            {stepIndex === 1 && <HealthScreen data={health} onChange={(d) => setHealth((h) => ({ ...h, ...d }))} />}
-            {stepIndex === 2 && <ParentInfoScreen data={parent} onChange={(d) => setParent((p) => ({ ...p, ...d }))} />}
-            {stepIndex === 3 && <SlotScreen category={catInfo?.category || ""} selectedSlot={selectedSlot} onChange={setSelectedSlot} />}
-            {stepIndex === 4 && <PaymentScreen paymentMethod={paymentMethod} onChangePayment={setPaymentMethod} onSubmit={handleSubmit} />}
+            {stepIndex === 0 && (
+              <ChildInfoScreen
+                data={child}
+                onChange={(d) => setChild((c) => ({ ...c, ...d }))}
+                photo={childPhoto}
+                onPhotoChange={setChildPhoto}
+              />
+            )}
+            {stepIndex === 1 && (
+              <ParentInfoScreen
+                data={parent}
+                onChange={(d) => setParent((p) => ({ ...p, ...d }))}
+              />
+            )}
+            {stepIndex === 2 && (
+              <PaymentScreen
+                paymentMethod={paymentMethod}
+                paymentOther={paymentOther}
+                onChangeMethod={setPaymentMethod}
+                onChangeOther={setPaymentOther}
+              />
+            )}
+            {stepIndex === 3 && (
+              <SignatureScreen
+                data={signature}
+                onChange={(d) => setSignature((s) => ({ ...s, ...d }))}
+                onSubmit={handleSubmit}
+                submitting={submitting}
+                error={submitError}
+                parentNom={parent.nom}
+              />
+            )}
 
-            {stepIndex < 4 && (
+            {stepIndex < 3 && (
               <div className="px-5 pb-8">
                 <button
                   onClick={goNext}
-                  disabled={!canContinueStep()}
-                  className="w-full h-[52px] bg-primary hover:bg-primary-dark text-primary-foreground font-semibold rounded-lg text-body transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  disabled={!canContinue()}
+                  className="w-full h-[52px] bg-primary hover:bg-primary-dark text-primary-foreground font-semibold rounded-xl text-sm tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   Continuer
                 </button>
@@ -114,7 +197,9 @@ const Index = () => {
           </>
         )}
 
-        {screen === 7 && <ConfirmationScreen prenom={child.prenom} dossierNumber={dossierNumber} />}
+        {screen === 5 && (
+          <ConfirmationScreen prenom={child.prenom} dossierNumber={dossierNumber} />
+        )}
       </div>
     </div>
   );
